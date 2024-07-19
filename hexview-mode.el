@@ -126,7 +126,9 @@
 
 (defun hexview:filelen (f)
   (if (hexview--udisk-img-file-p f)
-	  (hexview--disk-size f)
+	  (progn
+		(hexview--refresh-disk-info (hexview--udiskname-from-path f))
+		hexview--size-cache)
 	(elt (file-attributes f) 7))
   )
 (defun hexview:textp (c)
@@ -213,6 +215,7 @@
 (define-key hexview-mode-map "g" 'hexview:goto-index-hex)
 (define-key hexview-mode-map "\M-j" 'hexview:goto-index-dec)
 (define-key hexview-mode-map "j" 'hexview:goto-index-dec)
+(define-key hexview-mode-map "r" 'hexview:refresh)
 (define-key hexview-mode-map "q" 'kill-buffer)
 
 (defvar hexview:string-to-byte nil
@@ -224,40 +227,51 @@
   (setq hexview:string-to-byte (lambda (s idx)
                                   (get-byte idx s))))
 (defvar hexview--block-cache nil)
+(defvar hexview--block-size-cache nil)
 (defvar hexview--lun-cached nil)
 (defvar hexview--size-cache nil)
 (defvar hexview--js-proc nil)
-(defun hexview--disk-size(diskname)
-  (unless hexview--size-cache
+(defconst LgnRunDll "D:\\Work\\ToolsV3\\tdr\\otool\\win-x64\\LgnRunDll.exe")
+(defconst LgnRunDllPara (list "D:\\Work\\ToolsV3\\notepad++(x64)\\lib\\LgnScript.dll" "Script_Run" "-output" "936" "-flags" "0" "-code"))
+(defun temp-filter(proc resp)
+  (--map
+   (if (string-match "\\(.*?\\)\s*=\s*\\(.*\\)" it)
+	  (set (intern (match-string 1 it)) (string-to-number (match-string 2 it) 10)))
+   (string-split resp "\n"))
+  )
+(defun hexview--refresh-disk-info(diskname)
+  (unless (and hexview--size-cache hexview--block-size-cache)
 	(with-current-buffer (get-buffer-create "jsoutput")
 	  (erase-buffer)
 	  (let* (
 			 (js
 			  (concat
 			   "var Storage = Mgr.CreateInstance('LgnPacket.LgnDisk');\n"
-			   "Storage.Open('\\\\\\\\\.\\\\F:');\n"
+			   (format "Storage.Open('\\\\\\\\\.\\\\%s:');\n" diskname)
 			   "var Def = Mgr.DefaultObject;\n"
 			   "Storage.Parameter('CDB')='2500000000000000005A';\n"
 			   "var info = Storage.Read(8);\n"
 			   "var blockCount = Def.Hex2IntEx(info,0,4) + 1;\n"
 			   "var blockSize = Def.Hex2IntEx(info,4,4);\n"
-			   "Debug.write(blockCount*blockSize)"
+			   "Debug.writeln('hexview--size-cache = ', blockCount*blockSize)\n"
+			   "Debug.writeln('hexview--block-size-cache = ', blockSize)\n"
 			   ))
-			 )
-		(call-process "D:\\Work\\ToolsV3\\tdr\\otool\\win-x64\\LgnRunDll.exe"
-					  nil
-					  t
-					  nil	;;display
-					  "D:\\Work\\ToolsV3\\notepad++(x64)\\lib\\LgnScript.dll" "Script_Run" "-output" "936"
-					  "-code"
-					  js
-					  "-flags" "0" 
-					  )
+			 (proc (make-process
+					:name "*disk-size*"
+					:command (append (list LgnRunDll)
+									 LgnRunDllPara
+									 (list js)
+									 )
+					:filter (lambda(proc resp)
+							  (--map
+							   (if (string-match "\\(.*?\\)\s*=\s*\\(.*\\)" it)
+								   (set (intern (match-string 1 it)) (string-to-number (match-string 2 it) 10)))
+							   (string-split resp "\n")))
+					)))
+		(accept-process-output proc 3)
 		)
-	  (setq hexview--size-cache (string-to-number (buffer-string) 10))
 	  )
 	)
-  hexview--size-cache
   )
 (defun scsi-resp-filter (proc string)
  (progn 
@@ -278,11 +292,14 @@
 			   "var Storage = Mgr.CreateInstance('LgnPacket.LgnDisk');\n"
 			   (format "Storage.Open('\\\\\\\\\.\\\\%s:');\n" diskname) 
 			   "var Def = Mgr.DefaultObject;\n"
-			   "Storage.Parameter('CDB')='2500000000000000005A';\n"
-			   "var info = Storage.Read(8);\n"
-			   "//Debug.writeln(info);\n"
+			   (if hexview--block-size-cache
+				   (format "var blockSize = %d;\n" hexview--block-size-cache)
+				 (concat
+				  "Storage.Parameter('CDB')='2500000000000000005A';\n"	
+				  "var info = Storage.Read(8);\n"
+				  "var blockSize = Def.Hex2IntEx(info,4,4);\n")
+				 )
 			   "var blockCount = readBlockCount || (Def.Hex2IntEx(info,0,4) + 1);\n"
-			   "var blockSize = Def.Hex2IntEx(info,4,4);\n"
 			   "var blockInc = 1;\n"
 			   "Storage.Parameter('CDB')='2800'+ Def.Int2Hex(lun) + '00' + Def.Int2Hex2(blockInc) + '00';\n"
 			   "ret = Storage.Read(blockSize*blockInc);\n"
@@ -291,12 +308,10 @@
 			 (proc (if (process-live-p hexview--js-proc) hexview--js-proc
 					 (make-process :name "hexview-js"
 								   :buffer (get-buffer-create "jsoutput")
-								   :command
-								   `("D:\\Work\\ToolsV3\\tdr\\otool\\win-x64\\LgnRunDll.exe"
-									 "D:/Work/ToolsV3/notepad++(x64)/lib/LgnScript.dll"
-									 "Script_Run" "-output" "65001"
-									 "-flags" "0"
-									 "-code" ,js)
+								   :command (append (list LgnRunDll)
+													LgnRunDllPara
+													(list js)
+													)
 								   :filter 'scsi-resp-filter)))
 			 )
 		(accept-process-output proc 3)
@@ -417,7 +432,15 @@
     (hexview:usage-info)
     (hexview:template-info)
     (goto-char old-point)))
-
+(defun hexview:refresh()
+  (interactive)
+  (setq hexview--block-cache nil)
+  (setq hexview--lun-cached nil)
+  (setq hexview--size-cache nil)
+  (message "update begin")
+  (hexview:update)
+  (message "update end")
+  )
 (defun hexview-mode ()
   "Major mode for viewing file in hexical mode.
 thus \\{hexview-mode}. It's just a weekend project
@@ -478,6 +501,8 @@ When started, run `hexview-mode-hook'.
      :help "Goto hex index"]
     ["Goto dec index" hexview:goto-index-dec
      :help "Goto dec index"]
+    ["Refresh content" hexview:refresh
+     :help "Reread conten from disk / file"]
     "-"
     ["Kill buffer" kill-buffer
      :help "Kill the buffer"]
