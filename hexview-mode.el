@@ -280,14 +280,25 @@
 	)
    )
  )
+
+;; synchronous process's resp is very slow with unknown reason. change to asynchronous process.
 (defun hexview:read-scsi-asynchronously(diskname lun readBlockCount)
-  (unless (and hexview--block-cache (= hexview--lun-cached lun))
+  (unless (and hexview--block-cache
+			   (or
+				(and
+				 (= hexview--lun-cached lun)
+				 (>= (length hexview--block-cache) (* readBlockCount hexview--block-size-cache 2))
+				 )
+				(and
+				 (< hexview--lun-cached lun)
+				 (>= (length hexview--block-cache) (* (+ (- lun hexview--lun-cached) readBlockCount) hexview--block-size-cache 2))
+				 )
+				)
+			   )
 	(with-current-buffer (get-buffer-create "jsoutput")
 	  (let* (
 			 (js
 			  (concat
-			   "//Debug.writeln('hi' + new Date());\n"
-			   "var readBlockCount=1;\n"
 			   (format "var lun = %d;\n" lun)
 			   "var Storage = Mgr.CreateInstance('LgnPacket.LgnDisk');\n"
 			   (format "Storage.Open('\\\\\\\\\.\\\\%s:');\n" diskname) 
@@ -299,10 +310,10 @@
 				  "var info = Storage.Read(8);\n"
 				  "var blockSize = Def.Hex2IntEx(info,4,4);\n")
 				 )
-			   "var blockCount = readBlockCount || (Def.Hex2IntEx(info,0,4) + 1);\n"
+			   (format "var blockCount = %d;\n" readBlockCount)
 			   "var blockInc = 1;\n"
-			   "Storage.Parameter('CDB')='2800'+ Def.Int2Hex(lun) + '00' + Def.Int2Hex2(blockInc) + '00';\n"
-			   "ret = Storage.Read(blockSize*blockInc);\n"
+			   "Storage.Parameter('CDB')='2800'+ Def.Int2Hex(lun) + '00' + Def.Int2Hex2(blockCount) + '00';\n"
+			   "ret = Storage.Read(blockSize*blockCount);\n"
 			   "Debug.writeln(ret)"
 			   ))
 			 (proc (if (process-live-p hexview--js-proc) hexview--js-proc
@@ -319,61 +330,31 @@
 		)
 	  )
 	)
-  hexview--block-cache
-  )
-;; synchronous process's resp is very slow with unknown reason. change to asynchronous process.
-(defun hexview:read-scsi(diskname lun readBlockCount)
-  ;; (concat "2800" (format "%08X" lun) "00" (format "%02X" cnt) "00"))
-  (unless (and hexview--lun-cached (= hexview--lun-cached lun))
-	(with-current-buffer (get-buffer-create "jsoutput")
-	  (erase-buffer)
-	  (let* (
-			 (js
-			  (concat
-			   "//Debug.writeln('hi' + new Date());\n"
-			   "var readBlockCount=1;\n"
-			   (format "var lun = %d;\n" lun)
-			   "var Storage = Mgr.CreateInstance('LgnPacket.LgnDisk');\n"
-			   (format "Storage.Open('\\\\\\\\\.\\\\%s:');\n" diskname) 
-			   "var Def = Mgr.DefaultObject;\n"
-			   "Storage.Parameter('CDB')='2500000000000000005A';\n"
-			   "var info = Storage.Read(8);\n"
-			   "//Debug.writeln(info);\n"
-			   "var blockCount = readBlockCount || (Def.Hex2IntEx(info,0,4) + 1);\n"
-			   "var blockSize = Def.Hex2IntEx(info,4,4);\n"
-			   "var blockInc = 1;\n"
-			   "Storage.Parameter('CDB')='2800'+ Def.Int2Hex(lun) + '00' + Def.Int2Hex2(blockInc) + '00';\n"
-			   "ret = Storage.Read(blockSize*blockInc);\n"
-			   "Debug.writeln(ret)"
-			   ))
-			 )
-		(call-process "D:\\Work\\ToolsV3\\tdr\\otool\\win-x64\\LgnRunDll.exe"
-					  nil
-					  t
-					  nil	;;display
-					  "D:\\Work\\ToolsV3\\notepad++(x64)\\lib\\LgnScript.dll" "Script_Run" "-output" "65001"
-					  ;; "-code"
-					  ;; js
-					  ;; "-flags" "0"
-					  "-file" "d:/1.js"
-					  )
-		)
-	  (setq hexview--lun-cached lun)
-	  (setq hexview--block-cache (buffer-string))
-	  )
-	)
-  hexview--block-cache
+  (if
+	  (and
+	   (< hexview--lun-cached lun)
+	   (>= (length hexview--block-cache) (* (+ (- lun hexview--lun-cached) readBlockCount) hexview--block-size-cache 2))
+	   )
+	  (substring hexview--block-cache (* (- lun hexview--lun-cached) hexview--block-size-cache 2))
+  hexview--block-cache)
   )
 
 (defun hexview:read-udisk-part(diskname beg cnt)
-  (let* (
-		 (lun-size 4096)
-		 (lun (/ beg lun-size))
-		 ;; 暂时不考虑 【beg、cnt】跨逻辑扇区的情况
-		 (lun-cnt 1)
-		 (off (% beg lun-size))
-		 )
-	(substring (hexview:read-scsi-asynchronously diskname lun lun-cnt) (* 2 off) (* 2 (+ off cnt)))
+  (if (< beg hexview--size-cache)
+	  (progn
+		(if (> (+ beg cnt) hexview--size-cache)
+			(setq cnt (- hexview--size-cache beg)))
+		(let* (
+			   (beg (min beg (1- hexview--size-cache)))
+			   (cnt (min cnt (- hexview--size-cache beg)))
+			   (lun-size 4096)
+			   (lun (/ beg lun-size))
+			   (off (% beg lun-size))
+			   (lun-cnt (if (<= (+ off cnt) lun-size) 1 2))
+			   )
+		  (substring (hexview:read-scsi-asynchronously diskname lun lun-cnt) (* 2 off) (* 2 (+ off cnt)))
+		  )
+		)
 	)
   )
 (defun hexview--udisk-img-file-p(filename)
