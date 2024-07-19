@@ -125,7 +125,10 @@
 
 
 (defun hexview:filelen (f)
-  (elt (file-attributes f) 7))
+  (if (hexview--udisk-img-file-p f)
+	  (hexview--disk-size f)
+	(elt (file-attributes f) 7))
+  )
 (defun hexview:textp (c)
   (and (> c 31)
        (< c 127)))
@@ -220,15 +223,176 @@
                                     (elt s idx)))
   (setq hexview:string-to-byte (lambda (s idx)
                                   (get-byte idx s))))
+(defvar hexview--block-cache nil)
+(defvar hexview--lun-cached nil)
+(defvar hexview--size-cache nil)
+(defvar hexview--js-proc nil)
+(defun hexview--disk-size(diskname)
+  (unless hexview--size-cache
+	(with-current-buffer (get-buffer-create "jsoutput")
+	  (erase-buffer)
+	  (let* (
+			 (js
+			  (concat
+			   "var Storage = Mgr.CreateInstance('LgnPacket.LgnDisk');\n"
+			   "Storage.Open('\\\\\\\\\.\\\\F:');\n"
+			   "var Def = Mgr.DefaultObject;\n"
+			   "Storage.Parameter('CDB')='2500000000000000005A';\n"
+			   "var info = Storage.Read(8);\n"
+			   "var blockCount = Def.Hex2IntEx(info,0,4) + 1;\n"
+			   "var blockSize = Def.Hex2IntEx(info,4,4);\n"
+			   "Debug.write(blockCount*blockSize)"
+			   ))
+			 )
+		(call-process "D:\\Work\\ToolsV3\\tdr\\otool\\win-x64\\LgnRunDll.exe"
+					  nil
+					  t
+					  nil	;;display
+					  "D:\\Work\\ToolsV3\\notepad++(x64)\\lib\\LgnScript.dll" "Script_Run" "-output" "936"
+					  "-code"
+					  js
+					  "-flags" "0" 
+					  )
+		)
+	  (setq hexview--size-cache (string-to-number (buffer-string) 10))
+	  )
+	)
+  hexview--size-cache
+  )
+(defun scsi-resp-filter (proc string)
+ (progn 
+   (if (not (string= string "\n"))
+	(setq hexview--block-cache string)
+	)
+   )
+ )
+(defun hexview:read-scsi-asynchronously(diskname lun readBlockCount)
+  (unless (and hexview--block-cache (= hexview--lun-cached lun))
+	(with-current-buffer (get-buffer-create "jsoutput")
+	  (let* (
+			 (js
+			  (concat
+			   "//Debug.writeln('hi' + new Date());\n"
+			   "var readBlockCount=1;\n"
+			   (format "var lun = %d;\n" lun)
+			   "var Storage = Mgr.CreateInstance('LgnPacket.LgnDisk');\n"
+			   (format "Storage.Open('\\\\\\\\\.\\\\%s:');\n" diskname) 
+			   "var Def = Mgr.DefaultObject;\n"
+			   "Storage.Parameter('CDB')='2500000000000000005A';\n"
+			   "var info = Storage.Read(8);\n"
+			   "//Debug.writeln(info);\n"
+			   "var blockCount = readBlockCount || (Def.Hex2IntEx(info,0,4) + 1);\n"
+			   "var blockSize = Def.Hex2IntEx(info,4,4);\n"
+			   "var blockInc = 1;\n"
+			   "Storage.Parameter('CDB')='2800'+ Def.Int2Hex(lun) + '00' + Def.Int2Hex2(blockInc) + '00';\n"
+			   "ret = Storage.Read(blockSize*blockInc);\n"
+			   "Debug.writeln(ret)"
+			   ))
+			 (proc (if (process-live-p hexview--js-proc) hexview--js-proc
+					 (make-process :name "hexview-js"
+								   :buffer (get-buffer-create "jsoutput")
+								   :command
+								   `("D:\\Work\\ToolsV3\\tdr\\otool\\win-x64\\LgnRunDll.exe"
+									 "D:/Work/ToolsV3/notepad++(x64)/lib/LgnScript.dll"
+									 "Script_Run" "-output" "65001"
+									 "-flags" "0"
+									 "-code" ,js)
+								   :filter 'scsi-resp-filter)))
+			 )
+		(accept-process-output proc 3)
+		(setq hexview--lun-cached lun)
+		)
+	  )
+	)
+  hexview--block-cache
+  )
+;; synchronous process's resp is very slow with unknown reason. change to asynchronous process.
+(defun hexview:read-scsi(diskname lun readBlockCount)
+  ;; (concat "2800" (format "%08X" lun) "00" (format "%02X" cnt) "00"))
+  (unless (and hexview--lun-cached (= hexview--lun-cached lun))
+	(with-current-buffer (get-buffer-create "jsoutput")
+	  (erase-buffer)
+	  (let* (
+			 (js
+			  (concat
+			   "//Debug.writeln('hi' + new Date());\n"
+			   "var readBlockCount=1;\n"
+			   (format "var lun = %d;\n" lun)
+			   "var Storage = Mgr.CreateInstance('LgnPacket.LgnDisk');\n"
+			   (format "Storage.Open('\\\\\\\\\.\\\\%s:');\n" diskname) 
+			   "var Def = Mgr.DefaultObject;\n"
+			   "Storage.Parameter('CDB')='2500000000000000005A';\n"
+			   "var info = Storage.Read(8);\n"
+			   "//Debug.writeln(info);\n"
+			   "var blockCount = readBlockCount || (Def.Hex2IntEx(info,0,4) + 1);\n"
+			   "var blockSize = Def.Hex2IntEx(info,4,4);\n"
+			   "var blockInc = 1;\n"
+			   "Storage.Parameter('CDB')='2800'+ Def.Int2Hex(lun) + '00' + Def.Int2Hex2(blockInc) + '00';\n"
+			   "ret = Storage.Read(blockSize*blockInc);\n"
+			   "Debug.writeln(ret)"
+			   ))
+			 )
+		(call-process "D:\\Work\\ToolsV3\\tdr\\otool\\win-x64\\LgnRunDll.exe"
+					  nil
+					  t
+					  nil	;;display
+					  "D:\\Work\\ToolsV3\\notepad++(x64)\\lib\\LgnScript.dll" "Script_Run" "-output" "65001"
+					  ;; "-code"
+					  ;; js
+					  ;; "-flags" "0"
+					  "-file" "d:/1.js"
+					  )
+		)
+	  (setq hexview--lun-cached lun)
+	  (setq hexview--block-cache (buffer-string))
+	  )
+	)
+  hexview--block-cache
+  )
 
+(defun hexview:read-udisk-part(diskname beg cnt)
+  (let* (
+		 (lun-size 4096)
+		 (lun (/ beg lun-size))
+		 ;; 暂时不考虑 【beg、cnt】跨逻辑扇区的情况
+		 (lun-cnt 1)
+		 (off (% beg lun-size))
+		 )
+	(substring (hexview:read-scsi-asynchronously diskname lun lun-cnt) (* 2 off) (* 2 (+ off cnt)))
+	)
+  )
+(defun hexview--udisk-img-file-p(filename)
+  (string-suffix-p ":/" filename)
+)
+(defun hexview--udiskname-from-path(filename)
+  (substring filename 0 1)
+  )
 (defun hexview:read-file-part (filename beg cnt)
   "Read part of file into a byte sequence"
-  (let ((seg (with-temp-buffer 
-             (insert-file-contents-literally filename nil beg (+ beg cnt))
-             (buffer-string))
-           ))
-  (mapcar #'(lambda (x) (funcall hexview:string-to-byte (char-to-string x) 0)) seg)))
-
+  (if (hexview--udisk-img-file-p filename)
+	  (let (
+			(hex-string (hexview:read-udisk-part (hexview--udiskname-from-path filename) beg cnt))
+			(offset 0)
+			ret
+			)
+		(while-let (
+					(valid (< offset (length hex-string)))
+					(hex (substring hex-string offset (+ offset 2)))
+					)
+		  (setq offset (+ offset 2))
+		  (if ret
+			  (setq ret (append ret (list (string-to-number hex 16))))
+			(setq ret (list (string-to-number hex 16)))))
+		ret
+	  )
+	(let ((seg
+		   (with-temp-buffer 
+			 (insert-file-contents-literally filename nil beg (+ beg cnt))
+			 (buffer-string))
+		   )
+		  )
+	  (mapcar #'(lambda (x) (funcall hexview:string-to-byte (char-to-string x) 0)) seg)))
+  )
 (defun hexview:set-file (filename)
   "Set the viewing file name of a Hexview buffer"
   (interactive "f")
