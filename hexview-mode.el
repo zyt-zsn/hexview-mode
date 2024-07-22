@@ -151,7 +151,7 @@
       (progn
         (insert "\n"
                 "n: next-line    p: prev-line   q: kill-buffer          M-g | g: goto HEX index\n"
-				"r: refresh\n"
+				"r: refresh	f: switch-file\n"
                 "M-n | PgDn: next-page          M-p | PgUp: prev-page   M-j | j: goto DEC index\n"
         ))
     t))
@@ -224,6 +224,7 @@
 (define-key hexview-mode-map "\M-j" 'hexview:goto-index-dec)
 (define-key hexview-mode-map "j" 'hexview:goto-index-dec)
 (define-key hexview-mode-map "r" 'hexview:refresh)
+(define-key hexview-mode-map "f" 'hexview-find-file)
 (define-key hexview-mode-map "q" 'kill-buffer)
 
 (defvar hexview:string-to-byte nil
@@ -487,7 +488,9 @@ When started, run `hexview-mode-hook'.
     ["Goto dec index" hexview:goto-index-dec
      :help "Goto dec index"]
     ["Refresh content" hexview:refresh
-     :help "Reread conten from disk / file"]
+     :help "Reread content from disk / file"]
+    ["Switch file" hexview-find-file
+     :help "Switch disk / file"]
     "-"
     ["Kill buffer" kill-buffer
      :help "Kill the buffer"]
