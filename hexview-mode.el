@@ -123,12 +123,19 @@
      (2 'hexview-ascii-region t t)))
   "Font lock keywords used in `hexview-mode'.")
 
+(defvar hexview--block-cache nil)
+(defvar hexview--block-size-cache nil)
+(defvar hexview--lun-cached nil)
+(defvar hexview--disk-size nil)
+(defvar hexview--js-proc nil)
+(defconst zyt-jsEngine "D:\\Work\\ToolsV3\\tdr\\otool\\win-x64\\LgnRunDll.exe")
+(defconst zyt-jsPara (list "D:\\Work\\ToolsV3\\notepad++(x64)\\lib\\LgnScript.dll" "Script_Run" "-output" "936" "-flags" "0" "-code"))
 
 (defun hexview:filelen (f)
   (if (hexview--udisk-img-file-p f)
 	  (progn
 		(hexview--refresh-disk-info (hexview--udiskname-from-path f))
-		hexview--size-cache)
+		hexview--disk-size)
 	(elt (file-attributes f) 7))
   )
 (defun hexview:textp (c)
@@ -144,6 +151,7 @@
       (progn
         (insert "\n"
                 "n: next-line    p: prev-line   q: kill-buffer          M-g | g: goto HEX index\n"
+				"r: refresh\n"
                 "M-n | PgDn: next-page          M-p | PgUp: prev-page   M-j | j: goto DEC index\n"
         ))
     t))
@@ -226,13 +234,6 @@
                                     (elt s idx)))
   (setq hexview:string-to-byte (lambda (s idx)
                                   (get-byte idx s))))
-(defvar hexview--block-cache nil)
-(defvar hexview--block-size-cache nil)
-(defvar hexview--lun-cached nil)
-(defvar hexview--size-cache nil)
-(defvar hexview--js-proc nil)
-(defconst LgnRunDll "D:\\Work\\ToolsV3\\tdr\\otool\\win-x64\\LgnRunDll.exe")
-(defconst LgnRunDllPara (list "D:\\Work\\ToolsV3\\notepad++(x64)\\lib\\LgnScript.dll" "Script_Run" "-output" "936" "-flags" "0" "-code"))
 (defun temp-filter(proc resp)
   (--map
    (if (string-match "\\(.*?\\)\s*=\s*\\(.*\\)" it)
@@ -240,7 +241,7 @@
    (string-split resp "\n"))
   )
 (defun hexview--refresh-disk-info(diskname)
-  (unless (and hexview--size-cache hexview--block-size-cache)
+  (unless (and hexview--disk-size hexview--block-size-cache)
 	(with-current-buffer (get-buffer-create "jsoutput")
 	  (erase-buffer)
 	  (let* (
@@ -253,13 +254,13 @@
 			   "var info = Storage.Read(8);\n"
 			   "var blockCount = Def.Hex2IntEx(info,0,4) + 1;\n"
 			   "var blockSize = Def.Hex2IntEx(info,4,4);\n"
-			   "Debug.writeln('hexview--size-cache = ', blockCount*blockSize)\n"
+			   "Debug.writeln('hexview--disk-size = ', blockCount*blockSize)\n"
 			   "Debug.writeln('hexview--block-size-cache = ', blockSize)\n"
 			   ))
 			 (proc (make-process
 					:name "*disk-size*"
-					:command (append (list LgnRunDll)
-									 LgnRunDllPara
+					:command (append (list zyt-jsEngine)
+									 zyt-jsPara
 									 (list js)
 									 )
 					:filter (lambda(proc resp)
@@ -319,8 +320,8 @@
 			 (proc (if (process-live-p hexview--js-proc) hexview--js-proc
 					 (make-process :name "hexview-js"
 								   :buffer (get-buffer-create "jsoutput")
-								   :command (append (list LgnRunDll)
-													LgnRunDllPara
+								   :command (append (list zyt-jsEngine)
+													zyt-jsPara
 													(list js)
 													)
 								   :filter 'scsi-resp-filter)))
@@ -340,20 +341,23 @@
   )
 
 (defun hexview:read-udisk-part(diskname beg cnt)
-  (if (< beg hexview--size-cache)
-	  (progn
-		(if (> (+ beg cnt) hexview--size-cache)
-			(setq cnt (- hexview--size-cache beg)))
-		(let* (
-			   (beg (min beg (1- hexview--size-cache)))
-			   (cnt (min cnt (- hexview--size-cache beg)))
-			   (lun-size 4096)
-			   (lun (/ beg lun-size))
-			   (off (% beg lun-size))
-			   (lun-cnt (if (<= (+ off cnt) lun-size) 1 2))
-			   )
-		  (substring (hexview:read-scsi-asynchronously diskname lun lun-cnt) (* 2 off) (* 2 (+ off cnt)))
-		  )
+  (if (< beg hexview--disk-size)
+	  (let* (
+			 (logical-unit-size 4096)
+			 (logical-unit-offset (logand beg (1- logical-unit-size)))
+			 (logical-unit-addr (logand beg (lognot (1- logical-unit-size))))
+			 (logical-unit-cnt (/ (+ (- (+ beg cnt) logical-unit-addr)
+									 (1- logical-unit-size))
+								  logical-unit-size))
+			 (logical-unit-number (/ logical-unit-addr logical-unit-size))
+			 (cnt (min cnt (- hexview--disk-size beg)))
+			 )
+		(substring (hexview:read-scsi-asynchronously
+					diskname
+					logical-unit-number
+					logical-unit-cnt)
+				   (* 2 logical-unit-offset)
+				   (* 2 (+ logical-unit-offset cnt)))
 		)
 	)
   )
@@ -417,7 +421,7 @@
   (interactive)
   (setq hexview--block-cache nil)
   (setq hexview--lun-cached nil)
-  (setq hexview--size-cache nil)
+  (setq hexview--disk-size nil)
   (message "update begin")
   (hexview:update)
   (message "update end")
