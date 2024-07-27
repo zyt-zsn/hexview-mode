@@ -499,7 +499,10 @@ When started, run `hexview-mode-hook'.
 ;(add-hook 'find-file-hook 'hexview:large-file-hook)
 (defadvice find-file-noselect (around find-file-noselect-with-hexview last (filename &optional nowarn rawfile wildcards) activate)
   "Use hexview-find-file if the file is too large.(by asking users)"
-  (cond ((not (file-exists-p filename)) ad-do-it)
+  (cond ((or
+		  (not (file-exists-p filename))
+		  (file-directory-p filename)
+		  ) ad-do-it)
          ((< (hexview:filelen filename) large-file-warning-threshold) ad-do-it)
          (t (if (yes-or-no-p "Try open file with Hexview mode?")
                 (hexview-find-file filename)
